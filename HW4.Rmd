@@ -1,0 +1,209 @@
+---
+title: "620 HW4"
+author: "Jeffrey Waters"
+subtitle: "https://github.com/JeffwUmich/BIOSTAT_620_HW4"
+date: "4/7/24"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include = FALSE}
+# Import libraries
+library(knitr)
+library(tidyverse)
+library(readxl)
+options(digits=15)
+```
+
+
+# Problem 2
+```{r}
+st_time_ori <- read_excel("ScreenTime-hw3Q3.xlsx", sheet = 1)
+st_base   <- read_excel("ScreenTime-hw3Q3.xlsx", sheet = 2)
+
+
+st_time <- st_time_ori %>% 
+  group_by(pseudo_id) %>% 
+  arrange(time, .by_group = TRUE) %>% 
+  mutate(log.lag1 = log(lag(Pickups, n=1)))
+
+st_time$isWeekday <- ifelse(st_time$Day %in% c("Sa", "Su"), 0, 1)
+st_time$isIntervention <- ifelse(st_time$Phase == "Baseline", 0 , 1)
+
+# Merge time and baseline
+st_time <- left_join(st_time, st_base, by="pseudo_id")
+# Drop first time point
+st_time <- st_time %>% 
+  filter(time != 1)
+
+
+
+# Extract Intervention B's only
+ids.B <- st_base %>% 
+  filter(Treatment == "B")
+
+st_time.B <- st_time %>% 
+  filter(pseudo_id %in% ids.B$pseudo_id)
+
+# Extract Intervention A's only
+ids.A <- st_base %>% 
+  filter(Treatment == "A")
+
+st_time.A <- st_time %>% 
+  filter(pseudo_id %in% ids.A$pseudo_id)
+
+
+
+```
+
+# Problem 2a
+```{r}
+extract_estimates_and_errors <- function(data, formula){
+  s1 <- gsub("^.*~ | \\+ off.*$", "", formula)
+  row.names <- c("(Intercept)", strsplit(s1, " \\+ ")[[1]])
+  
+
+  formula <- as.formula(formula)
+  
+  table.print <- list()
+  table.export <- list()
+  for (id in data$pseudo_id){
+    d1 <- data %>% filter(pseudo_id == id)
+    model <- glm(formula, data=d1, family = poisson(link = "log")) 
+    
+    betas <- summary(model)$coefficients[, "Estimate"] %>% as.vector()
+    se <- summary(model)$coefficients[, "Std. Error"] %>% as.vector()
+    
+    pid <- paste("id:", id, sep="")
+    
+    table.print[[pid]] <- paste(round(betas, 5), " (", round(se, 5), ")",
+                                sep="")
+    table.export[[pid]] <- paste(betas, " (", se, ")", sep="")
+  }
+  
+  
+  # Helper Function
+  clean_matrix <- function(table){
+    df <- as.data.frame(table)# row.names=row.names)
+    
+    #row.names <- colnames(df)
+    col.names <- rownames(df)
+    
+    df <- t(df)
+    colnames(df) <- row.names
+    
+    return(df)
+  }
+  
+  
+  table.export <- clean_matrix(table.export)
+  table.print <- clean_matrix(table.print)
+  
+  print(table.print)
+  
+  return(table.export)
+}
+
+#FORMULA:
+# "Pickups ~ log.lag1 + isIntervention + isWeekday + offset(log(Tot.Scr.Time))"
+
+#     PROBLEM 2a table below
+#     SUMMARY TABLE
+#   "Estimate (Std.Error)"
+model_table <- extract_estimates_and_errors(st_time.B, formula = "Pickups ~ log.lag1 + isIntervention + isWeekday + offset(log(Tot.Scr.Time))")
+
+
+```
+
+# Problem 2b
+```{r}
+meta.learning <- function(table){
+  
+  # Each element is string: "Beta (std.error)"
+  # Parse out Beta and Std. Error into 2 separate dataframes
+  table <- gsub("\\(|\\)", "", table)
+  betas <- gsub(" .*$", "", table)
+  se <- gsub("^.* ", "", table)
+  
+  # Convert strings to numeric after apply regex
+  betas <- matrix(as.numeric(betas), nrow=nrow(betas), ncol=ncol(betas))
+  se <- matrix(as.numeric(se), nrow=nrow(se), ncol=ncol(se))
+  
+  # calculate inverse variance weights
+  ivw <- 1/(se^2)
+  
+  ivw_total <- ivw %>% apply(MARGIN=2, sum)
+  Std.Errors = sqrt(1 / ivw_total)
+  
+  
+  
+  meta.estimates <- apply(betas * ivw, MARGIN=2, sum) / ivw_total
+  
+  #Calculate Wald Statistic
+  WS <- (meta.estimates / Std.Errors)^2
+  
+  meta.results <- data.frame(
+    meta.estimates = meta.estimates,
+    Std.Errors = Std.Errors,
+    WS = WS,
+    p.values = sapply(WS, FUN = function(x) pchisq(x, df = 1,
+                                                   lower.tail=FALSE)),
+    row.names=colnames(table)
+  )
+  return(meta.results)
+  
+}
+
+meta.table <- meta.learning(model_table)
+meta.table$exp_beta <- exp(meta.table$meta.estimates)
+meta.table
+```
+
+
+# Problem 3a
+```{r}
+st_time.At <- st_time.A
+st_time.Bt <- st_time.B
+
+# Set pseudo_id to 1, so that for loop in extract_estimate.. only executes once
+# therefore all ids are run together rather than individually.
+
+# This is the only adjustment needed in order for function from problem 2a to
+# work for these 2 new models
+st_time.At$pseudo_id <- 1
+st_time.Bt$pseudo_id <- 1
+
+#FORMULA:
+#"Pickups ~ log.lag1 + isIntervention + isWeekday + sex + age + pets + 
+# siblings + offset(log(Tot.Scr.Time))
+
+model_table.A <- extract_estimates_and_errors(st_time.At, formula = "Pickups ~ log.lag1 + isIntervention + isWeekday + sex + age + pets + siblings + offset(log(Tot.Scr.Time))")
+
+
+model_table.B <- extract_estimates_and_errors(st_time.Bt, formula = "Pickups ~ log.lag1 + isIntervention + isWeekday + sex + age + pets + siblings + offset(log(Tot.Scr.Time))")
+
+```
+
+# Problem 3b
+```{r}
+total_intervention <- meta.learning(rbind(model_table.A, model_table.B))
+total_intervention$exp_beta <- exp(total_intervention$meta.estimates)
+
+# META LEARNING RESULTS FOR COMBINED INTERVENTION A and B
+total_intervention
+```
+
+
+# Problem 3c
+```{r}
+# FORMULA:
+#"Pickups ~ log.lag1 + isIntervention + isWeekday + sex + age + pets + 
+#siblings + offset(log(Tot.Scr.Time))"
+central_model <- glm("Pickups ~ log.lag1 + isIntervention + isWeekday + sex + age + pets + siblings + offset(log(Tot.Scr.Time))", data=st_time, family=poisson(link = "log"))
+
+# ORACLE RESULTS
+
+
+summary(central_model)
+```
